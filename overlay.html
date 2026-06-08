@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>NoVNC 屏幕墙</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #111;
+            color: #888;
+            font-family: Consolas, "Microsoft YaHei", monospace;
+            overflow: hidden;
+        }
+        #status {
+            position: fixed;
+            bottom: 5px;
+            right: 10px;
+            font-size: 11px;
+            color: #555;
+            z-index: 1;
+        }
+        #help {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #444;
+            font-size: 14px;
+            text-align: center;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="help">
+        加载中... 双击单格刷新 / F5全部刷新 / F11全屏
+    </div>
+    <div id="status"></div>
+
+    <script>
+        window.api.onInit((data) => {
+            const help = document.getElementById('help');
+            help.innerHTML = `${data.devices.length} 设备 · ${data.layout.rows}×${data.layout.cols} 布局`;
+            setTimeout(() => help.style.display = 'none', 5000);
+        });
+
+        let okCount = 0, failCount = 0, totalCount = 0;
+        window.api.onInit(d => { totalCount = d.devices.length; updateStatus(); });
+        window.api.onViewState(({ index, state }) => {
+            if (state === 'ok') okCount++;
+            else if (state === 'fail') failCount++;
+            updateStatus();
+        });
+        function updateStatus() {
+            document.getElementById('status').textContent =
+                `已连接 ${okCount}/${totalCount} · 失败 ${failCount}`;
+        }
+
+        // 快捷键
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F5') {
+                e.preventDefault();
+                window.api.refreshAll();
+            } else if (e.key === 'F11') {
+                e.preventDefault();
+                window.api.toggleFullscreen();
+            }
+        });
+    </script>
+</body>
+</html>

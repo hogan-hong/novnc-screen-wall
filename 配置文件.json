@@ -1,0 +1,61 @@
+{
+  "_注释": "NoVNC屏幕墙配置文件 - 修改后保存,启动时自动读取",
+
+  "layout": {
+    "rows": 5,
+    "cols": 5,
+    "gap": 2,
+    "_注释": "rows x cols 网格布局, gap=单元格间距像素"
+  },
+
+  "window": {
+    "fullscreen": false,
+    "width": 1920,
+    "height": 1080,
+    "title": "NoVNC 屏幕墙",
+    "backgroundColor": "#111111",
+    "_注释": "fullscreen=true 启动即全屏, false 则用 width x height"
+  },
+
+  "devices": [
+    { "name": "Se2 A1", "ip": "172.16.103.1" },
+    { "name": "Se2 A2", "ip": "172.16.103.2" },
+    { "name": "Se2 A3", "ip": "172.16.103.3" },
+    { "name": "Se2 A4", "ip": "172.16.103.4" },
+    { "name": "Se2 A5", "ip": "172.16.103.5" },
+    { "name": "Se2 B1", "ip": "172.16.103.6" },
+    { "name": "Se2 B2", "ip": "172.16.103.7" },
+    { "name": "Se2 B3", "ip": "172.16.103.8" },
+    { "name": "Se2 B4", "ip": "172.16.103.9" },
+    { "name": "Se2 B5", "ip": "172.16.103.10" },
+    { "name": "Se2 C1", "ip": "172.16.103.11" },
+    { "name": "Se2 C2", "ip": "172.16.103.12" },
+    { "name": "Se2 C3", "ip": "172.16.103.13" },
+    { "name": "Se2 C4", "ip": "172.16.103.14" },
+    { "name": "Se2 C5", "ip": "172.16.103.15" },
+    { "name": "Se2 D1", "ip": "172.16.103.16" },
+    { "name": "Se2 D2", "ip": "172.16.103.17" },
+    { "name": "Se2 D3", "ip": "172.16.103.18" },
+    { "name": "Se2 D4", "ip": "172.16.103.19" },
+    { "name": "Se2 D5", "ip": "172.16.103.20" },
+    { "name": "Se2 E1", "ip": "172.16.103.21" },
+    { "name": "Se2 E2", "ip": "172.16.103.22" },
+    { "name": "Se2 E3", "ip": "172.16.103.23" },
+    { "name": "Se2 E4", "ip": "172.16.103.24" },
+    { "name": "Se2 E5", "ip": "172.16.103.25" }
+  ],
+
+  "vnc": {
+    "urlTemplate": "http://{ip}:5801/vnc_video.html?autoconnect=true&host={ip}&port=5901&encrypt=0",
+    "stagger": 300,
+    "_注释": "urlTemplate 用 {ip} 占位, stagger=每个设备启动错峰间隔毫秒"
+  },
+
+  "ui": {
+    "showLabel": true,
+    "labelColor": "#00ff00",
+    "labelBg": "rgba(0,0,0,0.75)",
+    "showStatusDot": true,
+    "_注释": "showLabel=显示设备名标签, showStatusDot=显示右上角连接状态点"
+  }
+}

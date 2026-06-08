@@ -1,0 +1,46 @@
+{
+  "name": "novnc-screen-wall",
+  "version": "1.0.0",
+  "description": "基于Electron的NoVNC屏幕墙(每个VNC独立进程, 内存隔离, 防泄漏)",
+  "main": "index.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --publish never --config.compression=store"
+  },
+  "build": {
+    "appId": "com.hogan.novncscreenwall",
+    "productName": "NoVNC Screen Wall",
+    "asar": false,
+    "files": [
+      "**/*",
+      "!*.md",
+      "!配置文件.json"
+    ],
+    "extraResources": [
+      "配置文件.json"
+    ],
+    "extraFiles": [
+      "配置文件.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "win": {
+      "target": [
+        "dir"
+      ]
+    }
+  },
+  "keywords": ["vnc", "novnc", "screen-wall", "electron"],
+  "author": "Hogan Hong",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.7.2"
+  }
+}
