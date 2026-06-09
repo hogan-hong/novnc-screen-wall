@@ -1,6 +1,6 @@
 // NoVNC 屏幕墙 - 主进程
 // 每个 VNC 设备使用独立的 BrowserView (独立Chromium渲染进程, 内存隔离)
-const { app, BrowserWindow, BrowserView, ipcMain } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -68,6 +68,12 @@ function createMainWindow() {
     mainWindow.setMenuBarVisibility(false);
     mainWindow.loadFile('overlay.html');
 
+    // 最大化按钮 = 切全屏 (像浏览器F11)
+    mainWindow.on('maximize', () => {
+        mainWindow.unmaximize();
+        mainWindow.setFullScreen(true);
+    });
+
     if (_debugMode) {
         mainWindow.webContents.openDevTools({ mode: 'detach' });
     }
@@ -134,6 +140,54 @@ function createAllViews() {
                     document.addEventListener('dblclick', function(e) {
                         console.log('__WALL_DBLCLICK__:${i}');
                     }, true);
+
+                    // WebSocket 断连检测 -> 自动通知主进程重连
+                    var __wall_wsHooked = false;
+                    function hookWebSocket() {
+                        if (__wall_wsHooked) return;
+                        // 延迟等 noVNC 创建 WebSocket
+                        setTimeout(function() {
+                            var wsList = [];
+                            // 拦截 WebSocket 构造
+                            var OrigWS = window.WebSocket;
+                            window.WebSocket = function(url, protocols) {
+                                var ws = protocols ? new OrigWS(url, protocols) : new OrigWS(url);
+                                wsList.push(ws);
+                                ws.addEventListener('close', function() {
+                                    console.log('__WALL_DISCONNECT__:${i}');
+                                });
+                                ws.addEventListener('error', function() {
+                                    console.log('__WALL_DISCONNECT__:${i}');
+                                });
+                                return ws;
+                            };
+                            window.WebSocket.prototype = OrigWS.prototype;
+                            window.WebSocket.CONNECTING = OrigWS.CONNECTING;
+                            window.WebSocket.OPEN = OrigWS.OPEN;
+                            window.WebSocket.CLOSING = OrigWS.CLOSING;
+                            window.WebSocket.CLOSED = OrigWS.CLOSED;
+                            // 也 hook 已存在的 WebSocket 实例
+                            try {
+                                var rfb = (window.rfb || (window._noVNC && window._noVNC.rfb));
+                                if (rfb && rfb._sock && rfb._sock._websocket) {
+                                    rfb._sock._websocket.addEventListener('close', function() {
+                                        console.log('__WALL_DISCONNECT__:${i}');
+                                    });
+                                    rfb._sock._websocket.addEventListener('error', function() {
+                                        console.log('__WALL_DISCONNECT__:${i}');
+                                    });
+                                }
+                            } catch(e) {}
+                            __wall_wsHooked = true;
+                        }, 2000);
+                    }
+                    hookWebSocket();
+
+                    // 状态点颜色更新
+                    function __wallUpdateDot(color) {
+                        var dot = document.getElementById('__wall_dot');
+                        if (dot) dot.style.background = color;
+                    }
                 })();
             `;
             view.webContents.executeJavaScript(js).catch(() => {});
@@ -150,11 +204,28 @@ function createAllViews() {
                 mainWindow.webContents.send('view-state', { index: i, state: 'fail' });
             }
         });
-        // 接收双击事件通知 -> 刷新本格
+        // 接收 BrowserView 内的通知 (双击刷新 / 断连自动重连)
         view.webContents.on('console-message', (e, level, msg) => {
-            if (msg && msg.startsWith('__WALL_DBLCLICK__')) {
+            if (!msg) return;
+            if (msg.startsWith('__WALL_DBLCLICK__')) {
                 const idx = parseInt(msg.split(':')[1], 10);
                 refreshView(idx);
+            }
+            if (msg.startsWith('__WALL_DISCONNECT__')) {
+                const idx = parseInt(msg.split(':')[1], 10);
+                const item = views[idx];
+                if (!item) return;
+                // 状态点变红
+                item.view.webContents.executeJavaScript(
+                    `var d=document.getElementById('__wall_dot');if(d){d.style.background='#f00';d.style.boxShadow='0 0 4px #f00'}`
+                ).catch(() => {});
+                // 防抖: 5秒内不重复重连
+                const now = Date.now();
+                if (!item._lastReconnect || now - item._lastReconnect > 5000) {
+                    item._lastReconnect = now;
+                    if (_debugMode) console.log(`[AutoReconnect] #${idx} ${item.device.name} 断连, 5秒后重连...`);
+                    setTimeout(() => refreshView(idx), 5000);
+                }
             }
         });
 
