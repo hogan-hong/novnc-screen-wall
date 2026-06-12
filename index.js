@@ -167,7 +167,7 @@ function getInjectJS(device, index) {
                 }
             } catch(e) {}
 
-            // 2) 每30秒检查WebSocket状态
+            // 2) 每30秒检查WebSocket状态 (处理静默断连)
             var t1 = setInterval(function() {
                 var hasOpen = false;
                 __wall_wsInstances.forEach(function(ws) {
@@ -177,50 +177,50 @@ function getInjectJS(device, index) {
                         }
                     } catch(e) {}
                 });
+                // 有过WS但现在全关 = 断连
                 if (__wall_wsInstances.length > 0 && !hasOpen) {
                     console.log('__WALL_DISCONNECT__:${index}');
                 }
             }, 30000);
             window.__wall_timers.push(t1);
 
-            // 3) 画面变化检测 (每30秒采样, 3分钟无变化=断连)
-            var __wall_lastCanvasKey = '';
-            var __wall_noChangeCount = 0;
-            var t2 = setInterval(function() {
-                try {
-                    var canvas = document.querySelector('canvas');
-                    if (!canvas) return;
-                    var ctx = canvas.getContext('2d');
-                    if (!ctx) return;
-                    var w = Math.min(canvas.width, 32);
-                    var h = Math.min(canvas.height, 32);
-                    if (w === 0 || h === 0) return;
-                    var data = ctx.getImageData(0, 0, w, h);
-                    var key = w + 'x' + h + ':';
-                    for (var j = 0; j < Math.min(data.data.length, 200); j += 4) {
-                        key += data.data[j] + ',';
-                    }
-                    if (key === __wall_lastCanvasKey) {
-                        __wall_noChangeCount++;
-                        if (__wall_noChangeCount >= 6) {
-                            console.log('__WALL_DISCONNECT__:${index}');
-                            __wall_noChangeCount = 0;
-                        }
-                    } else {
-                        __wall_noChangeCount = 0;
-                    }
-                    __wall_lastCanvasKey = key;
-                } catch(e) {}
-            }, 30000);
-            window.__wall_timers.push(t2);
-
-            // 4) 灰屏快速检测: 加载后15秒检查canvas是否全灰 (VNC没连上)
-            //    向主进程报告灰屏状态
+            // 3) 灰屏检测: 只在加载后检查一次, 检测 noVNC 断连灰色背景
+            //    noVNC 断连时 canvas 显示均匀灰色背景 (RGB 各通道差值<15, 且值在 180-220 之间)
+            //    正常画面一定有色彩差异, 不会误判
             var t3 = setTimeout(function() {
                 try {
+                    // 先检查 noVNC RFB 连接状态 (最准确)
+                    var rfb = window.rfb;
+                    if (!rfb) {
+                        // 尝试从全局找 RFB 实例
+                        try { rfb = document.querySelector('#noVNC_canvas') && window.RFB; } catch(e2) {}
+                    }
+                    // 查找所有可能的全局变量
+                    if (!rfb) {
+                        var keys = Object.keys(window);
+                        for (var ki = 0; ki < keys.length; ki++) {
+                            try {
+                                var obj = window[keys[ki]];
+                                if (obj && obj._rfbConnectionState) {
+                                    rfb = obj;
+                                    break;
+                                }
+                            } catch(e2) {}
+                        }
+                    }
+                    if (rfb) {
+                        var state = rfb._rfbConnectionState || rfb.connectionState;
+                        if (state === 'disconnected' || state === 'failed' || state === 'error') {
+                            console.log('__WALL_GREY__:${index}');
+                            return;
+                        }
+                        // RFB 连接正常, 不需要检查画面
+                        return;
+                    }
+
+                    // 没有 RFB 对象, 检查 canvas 颜色 (严格条件避免误判)
                     var canvas = document.querySelector('canvas');
                     if (!canvas) {
-                        // 连canvas都没有 = 页面没正常加载
                         console.log('__WALL_GREY__:${index}');
                         return;
                     }
@@ -229,26 +229,30 @@ function getInjectJS(device, index) {
                         console.log('__WALL_GREY__:${index}');
                         return;
                     }
-                    var w = Math.min(canvas.width, 16);
-                    var h = Math.min(canvas.height, 16);
+                    var w = Math.min(canvas.width, 20);
+                    var h = Math.min(canvas.height, 20);
                     if (w === 0 || h === 0) {
                         console.log('__WALL_GREY__:${index}');
                         return;
                     }
                     var data = ctx.getImageData(0, 0, w, h);
-                    var allGrey = true;
+                    // 严格灰色判断: 所有像素 RGB 三通道几乎相等(差<10) 且均值在 170-230
+                    // 正常游戏画面即使静止也一定有颜色差异, 不会触发这个条件
+                    var greyPixelCount = 0;
+                    var totalPixels = data.data.length / 4;
                     for (var j = 0; j < data.data.length; j += 4) {
                         var r = data.data[j], g = data.data[j+1], b = data.data[j+2];
-                        // 灰色判断: RGB接近且在 100-200 之间
-                        if (Math.abs(r - g) > 30 || Math.abs(g - b) > 30 || r < 80 || r > 220) {
-                            allGrey = false;
-                            break;
+                        var avg = (r + g + b) / 3;
+                        if (Math.abs(r - avg) < 10 && Math.abs(g - avg) < 10 && Math.abs(b - avg) < 10 && avg > 170 && avg < 230) {
+                            greyPixelCount++;
                         }
                     }
-                    if (allGrey) {
+                    // 90%以上像素是灰色 = 断连灰屏
+                    if (greyPixelCount / totalPixels > 0.9) {
                         console.log('__WALL_GREY__:${index}');
                     }
                 } catch(e) {
+                    // 异常也报灰屏 (页面可能没正常加载)
                     console.log('__WALL_GREY__:${index}');
                 }
             }, 15000);
