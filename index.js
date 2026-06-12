@@ -8,10 +8,9 @@ const fs = require('fs');
 // 配置文件加载
 // ============================================================
 function loadConfig() {
-    // 优先读取 exe 同目录的配置文件 (打包后用户可改)
     const candidates = [
-        path.join(path.dirname(app.getPath('exe')), '配置文件.json'),  // 打包后
-        path.join(__dirname, '配置文件.json'),                          // 开发时
+        path.join(path.dirname(app.getPath('exe')), '配置文件.json'),
+        path.join(__dirname, '配置文件.json'),
     ];
     for (const p of candidates) {
         if (fs.existsSync(p)) {
@@ -38,16 +37,15 @@ try {
 // ============================================================
 const _debugMode = process.argv.includes('--debug');
 
-// 给Chromium加内存限制和性能参数 (每个渲染进程独立生效)
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256 --expose-gc');
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');  // 防止子view被遮挡时暂停渲染
-app.commandLine.appendSwitch('site-per-process');  // 强制每个origin独立进程
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+app.commandLine.appendSwitch('site-per-process');
 
 // ============================================================
 // 主窗口 + BrowserView 网格
 // ============================================================
 let mainWindow = null;
-const views = [];  // { view, device, index, bounds }
+const views = [];  // { view, device, index, bounds, _retryCount, _loadTimeout, _lastReconnect, _greyCheckTimer }
 
 function createMainWindow() {
     const w = CONFIG.window;
@@ -68,7 +66,7 @@ function createMainWindow() {
     mainWindow.setMenuBarVisibility(false);
     mainWindow.loadFile('overlay.html');
 
-    // 最大化按钮 = 切全屏 (像浏览器F11)
+    // 最大化按钮 = 切全屏
     mainWindow.on('maximize', () => {
         mainWindow.unmaximize();
         mainWindow.setFullScreen(true);
@@ -104,6 +102,11 @@ function getInjectJS(device, index) {
         (function() {
             // 移除旧的注入元素
             document.querySelectorAll('.__wall_overlay').forEach(el => el.remove());
+            // 清除旧的定时器
+            if (window.__wall_timers) {
+                window.__wall_timers.forEach(function(t) { clearInterval(t); clearTimeout(t); });
+            }
+            window.__wall_timers = [];
 
             // 标签
             if (${showLabel}) {
@@ -130,7 +133,7 @@ function getInjectJS(device, index) {
 
             // ========== 断连检测系统 ==========
 
-            // 1) WebSocket hook: 跟踪所有WS实例, 监听close/error
+            // 1) WebSocket hook
             var __wall_wsInstances = [];
             var __wall_OrigWS = window.WebSocket;
             window.WebSocket = function(url, protocols) {
@@ -164,8 +167,8 @@ function getInjectJS(device, index) {
                 }
             } catch(e) {}
 
-            // 2) 每30秒检查WebSocket状态 (处理静默断连)
-            setInterval(function() {
+            // 2) 每30秒检查WebSocket状态
+            var t1 = setInterval(function() {
                 var hasOpen = false;
                 __wall_wsInstances.forEach(function(ws) {
                     try {
@@ -174,16 +177,16 @@ function getInjectJS(device, index) {
                         }
                     } catch(e) {}
                 });
-                // 有过WebSocket但现在全部关闭 = 断连
                 if (__wall_wsInstances.length > 0 && !hasOpen) {
                     console.log('__WALL_DISCONNECT__:${index}');
                 }
             }, 30000);
+            window.__wall_timers.push(t1);
 
-            // 3) 画面变化检测 (每30秒采样canvas, 3分钟无变化=断连)
+            // 3) 画面变化检测 (每30秒采样, 3分钟无变化=断连)
             var __wall_lastCanvasKey = '';
             var __wall_noChangeCount = 0;
-            setInterval(function() {
+            var t2 = setInterval(function() {
                 try {
                     var canvas = document.querySelector('canvas');
                     if (!canvas) return;
@@ -199,9 +202,9 @@ function getInjectJS(device, index) {
                     }
                     if (key === __wall_lastCanvasKey) {
                         __wall_noChangeCount++;
-                        if (__wall_noChangeCount >= 6) {  // 6x30s = 3分钟无变化
+                        if (__wall_noChangeCount >= 6) {
                             console.log('__WALL_DISCONNECT__:${index}');
-                            __wall_noChangeCount = 0;  // 报告后重置, 避免重复
+                            __wall_noChangeCount = 0;
                         }
                     } else {
                         __wall_noChangeCount = 0;
@@ -209,12 +212,53 @@ function getInjectJS(device, index) {
                     __wall_lastCanvasKey = key;
                 } catch(e) {}
             }, 30000);
+            window.__wall_timers.push(t2);
+
+            // 4) 灰屏快速检测: 加载后15秒检查canvas是否全灰 (VNC没连上)
+            //    向主进程报告灰屏状态
+            var t3 = setTimeout(function() {
+                try {
+                    var canvas = document.querySelector('canvas');
+                    if (!canvas) {
+                        // 连canvas都没有 = 页面没正常加载
+                        console.log('__WALL_GREY__:${index}');
+                        return;
+                    }
+                    var ctx = canvas.getContext('2d');
+                    if (!ctx) {
+                        console.log('__WALL_GREY__:${index}');
+                        return;
+                    }
+                    var w = Math.min(canvas.width, 16);
+                    var h = Math.min(canvas.height, 16);
+                    if (w === 0 || h === 0) {
+                        console.log('__WALL_GREY__:${index}');
+                        return;
+                    }
+                    var data = ctx.getImageData(0, 0, w, h);
+                    var allGrey = true;
+                    for (var j = 0; j < data.data.length; j += 4) {
+                        var r = data.data[j], g = data.data[j+1], b = data.data[j+2];
+                        // 灰色判断: RGB接近且在 100-200 之间
+                        if (Math.abs(r - g) > 30 || Math.abs(g - b) > 30 || r < 80 || r > 220) {
+                            allGrey = false;
+                            break;
+                        }
+                    }
+                    if (allGrey) {
+                        console.log('__WALL_GREY__:${index}');
+                    }
+                } catch(e) {
+                    console.log('__WALL_GREY__:${index}');
+                }
+            }, 15000);
+            window.__wall_timers.push(t3);
         })();
     `;
 }
 
 // ============================================================
-// BrowserView 事件绑定 (提取为独立函数, 支持重建)
+// BrowserView 事件绑定
 // ============================================================
 function setupViewEvents(view, device, index) {
     // 页面加载完成 -> 注入标签和检测脚本
@@ -224,13 +268,15 @@ function setupViewEvents(view, device, index) {
             clearTimeout(item._loadTimeout);
             item._loadTimeout = null;
         }
+        // 加载成功, 重置重试计数
+        if (item) item._retryCount = 0;
         view.webContents.executeJavaScript(getInjectJS(device, index)).catch(() => {});
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('view-state', { index, state: 'ok' });
         }
     });
 
-    // 加载失败
+    // 加载失败 -> 自动重试
     view.webContents.on('did-fail-load', (e, code, desc, url, isMain) => {
         if (!isMain) return;
         const item = views[index];
@@ -238,18 +284,43 @@ function setupViewEvents(view, device, index) {
             clearTimeout(item._loadTimeout);
             item._loadTimeout = null;
         }
-        if (_debugMode) console.log(`[View] #${index} ${device.name} 加载失败: ${desc}`);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('view-state', { index, state: 'fail' });
+        if (_debugMode) console.log(`[View] #${index} ${device.name} 加载失败: ${desc} (code:${code})`);
+
+        // 状态点变红
+        try {
+            view.webContents.executeJavaScript(
+                `var d=document.getElementById('__wall_dot');if(d){d.style.background='#f00';d.style.boxShadow='0 0 4px #f00'}`
+            ).catch(() => {});
+        } catch(e) {}
+
+        // 自动重试 (最多3次, 每次间隔加大)
+        if (item) {
+            item._retryCount = (item._retryCount || 0) + 1;
+            if (item._retryCount <= 3) {
+                const delay = item._retryCount * 5000;  // 5s, 10s, 15s
+                if (_debugMode) console.log(`[AutoRetry] #${index} ${device.name} 第${item._retryCount}次重试, ${delay/1000}秒后...`);
+                setTimeout(() => {
+                    if (mainWindow && !mainWindow.isDestroyed()) {
+                        const vncUrl = CONFIG.vnc.urlTemplate.replace(/\{ip\}/g, device.ip) + '&_t=' + Date.now();
+                        view.webContents.loadURL(vncUrl);
+                    }
+                }, delay);
+            } else if (item._retryCount <= 6) {
+                // 3次loadURL重试都失败, 重建BrowserView再试
+                const delay = (item._retryCount - 3) * 10000;  // 10s, 20s, 30s
+                if (_debugMode) console.log(`[AutoRetry] #${index} ${device.name} 第${item._retryCount}次重建重试, ${delay/1000}秒后...`);
+                setTimeout(() => recreateView(index), delay);
+            }
+            // 超过6次放弃, 等用户手动双击或健康检查触发
         }
     });
 
-    // 接收通知 (双击刷新 / 断连自动重连)
+    // 接收通知 (双击刷新 / 断连自动重连 / 灰屏检测)
     view.webContents.on('console-message', (e, level, msg) => {
         if (!msg) return;
         if (msg.startsWith('__WALL_DBLCLICK__')) {
             const idx = parseInt(msg.split(':')[1], 10);
-            refreshView(idx);
+            recreateView(idx);  // 双击直接重建, 更彻底
         }
         if (msg.startsWith('__WALL_DISCONNECT__')) {
             const idx = parseInt(msg.split(':')[1], 10);
@@ -265,9 +336,17 @@ function setupViewEvents(view, device, index) {
             const now = Date.now();
             if (!item._lastReconnect || now - item._lastReconnect > 8000) {
                 item._lastReconnect = now;
-                if (_debugMode) console.log(`[AutoReconnect] #${idx} ${item.device.name} 断连, 5秒后重连...`);
-                setTimeout(() => refreshView(idx), 5000);
+                if (_debugMode) console.log(`[AutoReconnect] #${idx} ${item.device.name} 断连, 5秒后重建...`);
+                setTimeout(() => recreateView(idx), 5000);
             }
+        }
+        if (msg.startsWith('__WALL_GREY__')) {
+            const idx = parseInt(msg.split(':')[1], 10);
+            const item = views[idx];
+            if (!item) return;
+            if (_debugMode) console.log(`[GreyCheck] #${idx} ${item.device.name} 画面灰屏, 重建...`);
+            // 灰屏 = VNC没连上, 直接重建
+            setTimeout(() => recreateView(idx), 3000);
         }
     });
 }
@@ -277,22 +356,22 @@ function setupViewEvents(view, device, index) {
 // ============================================================
 function createAllViews() {
     const { devices, vnc } = CONFIG;
-    const stagger = vnc.stagger || 300;
+    const stagger = vnc.stagger || 800;  // 默认800ms, 比300更稳妥
 
     devices.forEach((device, i) => {
         const view = new BrowserView({
             webPreferences: {
                 contextIsolation: true,
                 nodeIntegration: false,
-                partition: `persist:vnc-${i}`,  // 每个VNC独立session存储,完全隔离
+                partition: `persist:vnc-${i}`,
             }
         });
         mainWindow.addBrowserView(view);
-        views.push({ view, device, index: i, bounds: { x: 0, y: 0, width: 0, height: 0 } });
+        views.push({ view, device, index: i, bounds: { x: 0, y: 0, width: 0, height: 0 }, _retryCount: 0 });
 
         setupViewEvents(view, device, i);
 
-        // 错峰加载,避免25个同时连接服务器
+        // 错峰加载
         setTimeout(() => {
             const url = vnc.urlTemplate.replace(/\{ip\}/g, device.ip);
             view.webContents.loadURL(url);
@@ -314,7 +393,7 @@ function layoutViews() {
     views.forEach(({ view, index }) => {
         const r = Math.floor(index / cols);
         const c = index % cols;
-        if (r >= rows) return;  // 超出布局的不显示
+        if (r >= rows) return;
 
         const x = gap + c * (cellW + gap);
         const y = gap + r * (cellH + gap);
@@ -330,49 +409,20 @@ function layoutViews() {
 }
 
 // ============================================================
-// 刷新单格 (缓存破坏 + 崩溃检测 + 超时重建)
+// 刷新单格 (总是重建, 最彻底)
 // ============================================================
 function refreshView(index) {
     const item = views[index];
     if (!item) return false;
 
-    // 清除之前的加载超时
+    // 清除加载超时
     if (item._loadTimeout) {
         clearTimeout(item._loadTimeout);
         item._loadTimeout = null;
     }
 
-    // 如果 webContents 已崩溃或已销毁, 直接重建 BrowserView
-    try {
-        if (item.view.webContents.isCrashed() || item.view.webContents.isDestroyed()) {
-            if (_debugMode) console.log(`[Refresh] #${index} ${item.device.name} webContents崩溃/销毁, 重建`);
-            recreateView(index);
-            return true;
-        }
-    } catch(e) {
-        if (_debugMode) console.log(`[Refresh] #${index} ${item.device.name} webContents访问异常, 重建`);
-        recreateView(index);
-        return true;
-    }
-
-    const { vnc } = CONFIG;
-    // 加 _t 缓存破坏, 确保 Chromium 不走缓存
-    const url = vnc.urlTemplate.replace(/\{ip\}/g, item.device.ip) + '&_t=' + Date.now();
-    item.view.webContents.loadURL(url);
-
-    // 30秒加载超时 -> 重建 BrowserView
-    item._loadTimeout = setTimeout(() => {
-        item._loadTimeout = null;
-        try {
-            if (item.view.webContents && !item.view.webContents.isDestroyed()) {
-                if (_debugMode) console.log(`[Refresh] #${index} ${item.device.name} 加载超时30s, 重建`);
-                recreateView(index);
-            }
-        } catch(e) {
-            recreateView(index);
-        }
-    }, 30000);
-
+    // 直接重建, 因为只 loadURL 可能还是灰屏
+    recreateView(index);
     return true;
 }
 
@@ -411,6 +461,7 @@ function recreateView(index) {
     // 更新引用
     item.view = newView;
     item._lastReconnect = 0;
+    item._retryCount = 0;
 
     // 重新绑定事件
     setupViewEvents(newView, item.device, index);
@@ -425,7 +476,7 @@ function recreateView(index) {
 }
 
 // ============================================================
-// 主进程健康检查 (每60秒检查所有 BrowserView 是否崩溃)
+// 主进程健康检查 (每60秒)
 // ============================================================
 function startHealthCheck() {
     setInterval(() => {
@@ -453,7 +504,7 @@ ipcMain.handle('refresh-view', (e, index) => refreshView(index));
 ipcMain.handle('refresh-all', () => {
     const { vnc } = CONFIG;
     views.forEach((item, i) => {
-        setTimeout(() => refreshView(i), i * (vnc.stagger || 300));
+        setTimeout(() => refreshView(i), i * (vnc.stagger || 800));
     });
     return true;
 });

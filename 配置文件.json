@@ -47,7 +47,7 @@
 
   "vnc": {
     "urlTemplate": "http://{ip}:5801/vnc_video.html?autoconnect=true&host={ip}&port=5901&encrypt=0",
-    "stagger": 300,
+    "stagger": 800,
     "_注释": "urlTemplate 用 {ip} 占位, stagger=每个设备启动错峰间隔毫秒"
   },
 
